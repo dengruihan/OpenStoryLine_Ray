@@ -228,6 +228,8 @@ class SpeechRoughCutInput(BaseInput):
     )
     gap_threshold: Annotated[int, Field(default=400, description="Gap threshold for grouping sentences into subtitle units (milliseconds)")]
     user_request: Annotated[str, Field(default="", description="User's requirements for rough cut results, such as expected clip length, whether to split at natural pauses, etc. If not provided, the system will formulate a request based on media content and general editing principles.")] = ""
+    enable_trash_detection: Annotated[bool, Field(default=False, description="Enable trash marker detection to automatically identify and remove segments containing trash markers like '这条不行', '重来', etc.")] = False
+    trash_markers: Annotated[List[str], Field(default=["这条不行", "重来", "不对", "算了", "不要这个", "重新开始", "再录一次", "从头来"], description="List of trash marker phrases to detect. When found in speech, the corresponding segments will be automatically removed.")] = ["这条不行", "重来", "不对", "算了", "不要这个", "重新开始", "再录一次", "从头来"]
 
 class UnderstandClipsInput(BaseModel):
     mode: Literal["auto", "skip", "default"] = Field(
