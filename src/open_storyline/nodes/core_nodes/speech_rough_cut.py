@@ -42,6 +42,7 @@ class SpeechRoughCutNode(BaseNode):
     async def process(self, node_state: NodeState, inputs: Dict[str, Any]) -> Any:
         """
         Main processing function:
+        - Identify trash markers in ASR sentences
         - Calls LLM to get rough cut suggestions
         - Groups sentences by gap threshold
         - Adds buffer and computes cut points
@@ -54,12 +55,17 @@ class SpeechRoughCutNode(BaseNode):
         history_rough_cut_jsons = [[{'text': item.get('text', '')} for item in sublist] for sublist in history_rough_cut_jsons]
         user_request = inputs.get('user_request', {})
         gap_threshold = inputs.get('gap_threshold', 400)
+        trash_markers = inputs.get('trash_markers', ["这条不行", "重来", "不对", "算了", "不要这个", "重新开始", "再录一次", "从头来"])
+        enable_trash_detection = inputs.get('enable_trash_detection', False)
         output_directory = self._prepare_output_directory(node_state, inputs)
         llm = node_state.llm
         rough_cut_jsons, clips = [], []
 
         # Load system prompt for rough cut
         system_prompt = get_prompt("speech_rough_cut.system", lang=node_state.lang)
+
+        # Load system prompt for trash marker detection
+        trash_system_prompt = get_prompt("speech_rough_cut.system_trash_marker", lang=node_state.lang) if enable_trash_detection else None
 
         for asr_info in asr_infos:
             video_path = asr_info.get('path')
@@ -71,6 +77,38 @@ class SpeechRoughCutNode(BaseNode):
             asr_sentence_info = asr_info.get("asr_sentence_info", [])
 
             for i, sentence in enumerate(asr_sentence_info):
+                # First, detect trash markers if enabled
+                if enable_trash_detection and trash_system_prompt:
+                    trash_user_prompt = get_prompt(
+                        "speech_rough_cut.user_trash_marker",
+                        lang=node_state.lang,
+                        curr_asr_sentence_info=json.dumps(sentence),
+                        asr_text=asr_info.get("asr_text", ''),
+                        trash_markers=json.dumps(trash_markers, ensure_ascii=False),
+                        pre_ctx=asr_sentence_info[i-1]["text"] if i > 0 else '',
+                        nxt_ctx=asr_sentence_info[i+1]["text"] if i < len(asr_sentence_info) - 1 else '',
+                    )
+
+                    try:
+                        trash_raw = await llm.complete(
+                            system_prompt=trash_system_prompt,
+                            user_prompt=trash_user_prompt,
+                            media=None,
+                            temperature=0.1,
+                            top_p=0.9,
+                            max_tokens=4096,
+                            model_preferences=None,
+                        )
+                        trash_parsed = parse_json_dict(trash_raw)
+                        is_trash = trash_parsed.get('is_trash', False)
+                        
+                        # If this is a trash segment, skip it entirely
+                        if is_trash:
+                            node_state.node_summary.info_for_user(f"检测到废片标记，已删除片段: {sentence.get('text', '')[:50]}...")
+                            continue
+                    except Exception as e:
+                        node_state.node_summary.add_warning(f"废片检测失败: {e}, 跳过废片检测，继续正常处理")
+
                 # Generate user prompt with ASR sentence info
                 user_prompt = get_prompt(
                     "speech_rough_cut.user",
